@@ -13,6 +13,7 @@ from ._doc_common import DocumentInformation
 from ._encryption import PasswordType
 from ._page import PageObject, Transformation
 from ._reader import PdfReader
+from ._signatures import PdfRevision, PdfSignature
 from ._text_extraction import mult
 from ._version import __version__
 from ._writer import ObjectDeletionFlag, PdfWriter
@@ -41,6 +42,8 @@ __all__ = [
     "PaperSize",
     "PasswordType",
     "PdfReader",
+    "PdfRevision",
+    "PdfSignature",
     "PdfWriter",
     "Transformation",
     "__version__",

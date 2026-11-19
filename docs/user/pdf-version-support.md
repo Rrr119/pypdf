@@ -33,8 +33,9 @@ inside the issues or try with a corresponding PDF file. In general, we are open 
 add support for missing features. Please open a new issue if it does not exist yet, and
 keep in mind that we rely on external contributors to support us with the implementation.
 
-One commonly requested feature is proper support reading/handling incremental PDF files, see
-[issue #3304](https://github.com/py-pdf/pypdf/issues/3304).
+Incremental revisions can be inspected through `PdfReader.revisions` and
+`PdfReader.incremental_updates`. Signed documents can be inspected through
+`PdfReader.signatures`; see {doc}`signatures`.
 
 See [History of PDF](https://en.wikipedia.org/wiki/History_of_PDF) for more
 features.

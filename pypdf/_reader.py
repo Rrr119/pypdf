@@ -49,6 +49,13 @@ else:
 from ._configuration import apply_legacy_configuration
 from ._doc_common import PdfDocCommon, convert_to_int
 from ._encryption import Encryption, PasswordType
+from ._signatures import (
+    PdfRevision,
+    PdfSignature,
+    _RevisionRecord,
+    build_revisions,
+    extract_signatures,
+)
 from ._utils import (
     WHITESPACES_AS_BYTES,
     StrByteType,
@@ -143,6 +150,8 @@ class PdfReader(PdfDocCommon):
         self.xref_free_entry: dict[int, dict[Any, Any]] = {}
         self.xref_objStm: dict[int, tuple[Any, Any]] = {}
         self.trailer = DictionaryObject()
+        self._revision_records: list[_RevisionRecord] = []
+        self._last_xref_trailer: DictionaryObject | None = None
 
         # Security parameters.
         self._root_object_recovery_limit = (
@@ -236,6 +245,8 @@ class PdfReader(PdfDocCommon):
         self.xref = {}
         self.xref_free_entry = {}
         self.xref_objStm = {}
+        self._revision_records = []
+        self._last_xref_trailer = None
 
     @property
     def root_object(self) -> DictionaryObject:
@@ -343,6 +354,87 @@ class PdfReader(PdfDocCommon):
         pdf_file_version = self.stream.read(8).decode("utf-8", "backslashreplace")
         self.stream.seek(loc, 0)  # return to where it was
         return pdf_file_version
+
+    def _read_pdf_data(self) -> bytes:
+        """Read the complete raw PDF without changing the stream position."""
+        position = self.stream.tell()
+        try:
+            self.stream.seek(0, 0)
+            return self.stream.read()
+        finally:
+            self.stream.seek(position, 0)
+
+    @property
+    def revisions(self) -> list[PdfRevision]:
+        """The document revisions, ordered from oldest to newest.
+
+        Every revision after the first one was appended as an incremental
+        update. The byte boundaries are useful to determine which revision a
+        signature covers.
+        """
+        data = self._read_pdf_data()
+        return self._build_revisions(data)
+
+    def _build_revisions(self, data: bytes) -> list[PdfRevision]:
+        if self._revision_records:
+            return build_revisions(self._revision_records, data)
+        if not data:
+            return []
+        return [
+            PdfRevision(
+                index=0,
+                xref_offset=self._startxref,
+                start_offset=0,
+                end_offset=len(data),
+                trailer=self.trailer,
+            )
+        ]
+
+    def get_revisions(self) -> list[PdfRevision]:
+        """Return :attr:`revisions`.
+
+        This method is provided for callers who prefer an explicit accessor
+        over the property.
+        """
+        return self.revisions
+
+    @property
+    def incremental_updates(self) -> list[PdfRevision]:
+        """Incremental updates applied after the original document."""
+        return [revision for revision in self.revisions if revision.is_incremental]
+
+    def get_incremental_updates(self) -> list[PdfRevision]:
+        """Return :attr:`incremental_updates`."""
+        return self.incremental_updates
+
+    @property
+    def signatures(self) -> list[PdfSignature]:
+        """Digital signature fields which contain a signature dictionary."""
+        data = self._read_pdf_data()
+        revisions = self._build_revisions(data)
+        return extract_signatures(self, data, revisions)
+
+    def get_signatures(self) -> list[PdfSignature]:
+        """Return :attr:`signatures`."""
+        return self.signatures
+
+    @property
+    def is_signed(self) -> bool:
+        """Whether the document contains at least one digital signature."""
+        return bool(self.signatures)
+
+    @property
+    def is_tampered(self) -> bool:
+        """Whether any detected signature indicates tampering.
+
+        This checks the ``/ByteRange`` structure and the CMS ``messageDigest``.
+        Uncovered data which forms a valid incremental update is reported by
+        the individual signature's :attr:`PdfSignature.modified_after_signing`
+        instead of being classified as tampering.
+        It does not validate certificate chains or the signer's public-key
+        signature.
+        """
+        return any(signature.is_tampered for signature in self.signatures)
 
     @property
     def xmp_metadata(self) -> XmpInformation | None:
@@ -1240,6 +1332,8 @@ class PdfReader(PdfDocCommon):
         self.xref = {}
         self.xref_free_entry = {}
         self.xref_objStm = {}
+        self._revision_records = []
+        self._last_xref_trailer = None
         self._xref_stream_entry_count = 0
         self.trailer = DictionaryObject()
         visited_xref_offsets: set[int] = set()
@@ -1254,6 +1348,8 @@ class PdfReader(PdfDocCommon):
                 break
             visited_xref_offsets.add(startxref)
             # load the xref table
+            revision_xref_offset = startxref
+            self._last_xref_trailer = None
             stream.seek(startxref, 0)
             x = stream.read(1)
             if x in b"\r\n":
@@ -1284,9 +1380,21 @@ class PdfReader(PdfDocCommon):
                 if "/Prev" in xrefstream:
                     startxref = cast(int, xrefstream["/Prev"])
                 else:
-                    break
+                    startxref = None
             else:
                 startxref = self._read_xref_other_error(stream, startxref)
+                continue
+
+            if self._last_xref_trailer is not None:
+                self._revision_records.append(
+                    _RevisionRecord(
+                        xref_offset=revision_xref_offset,
+                        trailer=self._last_xref_trailer,
+                        previous_xref_offset=(
+                            int(startxref) if isinstance(startxref, int) else None
+                        ),
+                    )
+                )
 
     # The trailer keys a PDF 1.5+ cross-reference stream carries in place of a
     # `trailer` keyword (PDF 2.0 specification, table 17).
@@ -1296,6 +1404,7 @@ class PdfReader(PdfDocCommon):
 
     def _process_xref_stream(self, xrefstream: DictionaryObject) -> None:
         """Process and handle the xref stream."""
+        self._last_xref_trailer = xrefstream
         for key in self._XREF_STREAM_TRAILER_KEYS:
             if key in xrefstream and key not in self.trailer:
                 self.trailer[NameObject(key)] = xrefstream.raw_get(key)
@@ -1313,6 +1422,7 @@ class PdfReader(PdfDocCommon):
         read_non_whitespace(stream)
         stream.seek(-1, 1)
         new_trailer = cast(dict[str, Any], read_object(stream, self))
+        self._last_xref_trailer = cast(DictionaryObject, new_trailer)
         for key, value in new_trailer.items():
             if key not in self.trailer:
                 self.trailer[key] = value

@@ -1,0 +1,17 @@
+{
+  "root": "/home/dev/feedback/uid28718",
+  "B": "/home/dev/feedback/uid28718",
+  "sha": "3b2882f95e0608f5d027853a10aa0e07748d56de",
+  "wslDistro": "Ubuntu-26.04",
+  "source": {
+    "owner": "py-pdf",
+    "repo": "pypdf",
+    "sha": "3b2882f95e0608f5d027853a10aa0e07748d56de"
+  },
+  "fork": {
+    "owner": "Rrr119",
+    "repo": "pypdf",
+    "cloneUrl": "https://github.com/Rrr119/pypdf.git"
+  },
+  "at": "2026-11-19T18:31:36.991Z"
+}
